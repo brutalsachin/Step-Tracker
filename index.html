@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Step Tracker</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        
+        #app-container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 20px;
+            max-width: 1200px;
+        }
+        
+        #controls {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            width: 300px;
+        }
+        
+        canvas {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .control-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        
+        input, select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-top: 5px;
+        }
+        
+        button:hover {
+            background: #45a049;
+        }
+        
+        #stats {
+            margin-top: 15px;
+            padding: 10px;
+            background: #f0f0f0;
+            border-radius: 4px;
+        }
+        
+        .goal-reached {
+            animation: pulse 0.5s infinite alternate;
+        }
+        
+        @keyframes pulse {
+            from { box-shadow: 0 0 5px rgba(0,255,0,0.5); }
+            to { box-shadow: 0 0 20px rgba(0,255,0,0.8); }
+        }
+    </style>
+</head>
+<body>
+    <h1>Advanced Step Tracker</h1>
+    
+    <div id="app-container">
+        <div id="controls">
+            <div class="control-group">
+                <label for="gridSize">Grid Size:</label>
+                <select id="gridSize">
+                    <option value="32">32x32</option>
+                    <option value="64" selected>64x64</option>
+                    <option value="128">128x128</option>
+                </select>
+            </div>
+            
+            <div class="control-group">
+                <label for="age">Age:</label>
+                <input type="number" id="age" min="1" max="120" value="30">
+            </div>
+            
+            <div class="control-group">
+                <label>Start Position:</label>
+                <div style="display: flex; gap: 10px;">
+                    <input type="number" id="startX" min="0" placeholder="X" value="0">
+                    <input type="number" id="startY" min="0" placeholder="Y" value="0">
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <label>Destination:</label>
+                <div style="display: flex; gap: 10px;">
+                    <input type="number" id="destX" min="0" placeholder="X" value="63">
+                    <input type="number" id="destY" min="0" placeholder="Y" value="63">
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <label for="trailStyle">Trail Style:</label>
+                <select id="trailStyle">
+                    <option value="none">None</option>
+                    <option value="line" selected>Line</option>
+                    <option value="dots">Dots</option>
+                    <option value="fade">Fading</option>
+                </select>
+            </div>
+            
+            <button id="startBtn">Start Tracking</button>
+            <button id="resetBtn">Reset</button>
+            
+            <div id="stats">
+                <p>Steps Taken: <span id="stepCounter">0</span></p>
+                <p>Distance: <span id="distance">0</span> units</p>
+                <p>Status: <span id="status">Ready</span></p>
+            </div>
+        </div>
+        
+        <canvas id="gridCanvas" width="640" height="640"></canvas>
+    </div>
+
+    <script>
+        // Kalman Filter Implementation
+        class KalmanFilter {
+            constructor(processNoise = 0.01, measurementNoise = 0.1) {
+                this.Q = processNoise;
+                this.R = measurementNoise;
+                this.P = 1;
+                this.x = 0;
+            }
+
+            update(measurement) {
+                // Prediction
+                this.P += this.Q;
+
+                // Update
+                const K = this.P / (this.P + this.R);
+                this.x += K * (measurement - this.x);
+                this.P *= (1 - K);
+                return this.x;
+            }
+
+            reset() {
+                this.P = 1;
+                this.x = 0;
+            }
+        }
+
+        // Main Application
+        class StepTracker {
+            constructor() {
+                this.canvas = document.getElementById('gridCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.gridSize = 64;
+                this.cellSize = this.canvas.width / this.gridSize;
+                
+                this.currentPos = { x: 0, y: 0 };
+                this.destination = { x: this.gridSize-1, y: this.gridSize-1 };
+                this.path = [];
+                this.stepCount = 0;
+                this.isTracking = false;
+                this.trailStyle = 'line';
+                
+                // Kalman Filters
+                this.kfX = new KalmanFilter();
+                this.kfY = new KalmanFilter();
+                this.kfZ = new KalmanFilter();
+                this.lastAcceleration = { x: 0, y: 0, z: 0 };
+                this.accelerationThreshold = 12;
+                
+                this.initializeControls();
+                this.drawGrid();
+            }
+            
+            initializeControls() {
+                document.getElementById('gridSize').addEventListener('change', (e) => {
+                    this.gridSize = parseInt(e.target.value);
+                    this.cellSize = this.canvas.width / this.gridSize;
+                    this.reset();
+                });
+                
+                document.getElementById('trailStyle').addEventListener('change', (e) => {
+                    this.trailStyle = e.target.value;
+                    this.draw();
+                });
+                
+                document.getElementById('startBtn').addEventListener('click', () => {
+                    this.startTracking();
+                });
+                
+                document.getElementById('resetBtn').addEventListener('click', () => {
+                    this.reset();
+                });
+            }
+            
+            startTracking() {
+                this.currentPos = {
+                    x: parseInt(document.getElementById('startX').value),
+                    y: parseInt(document.getElementById('startY').value)
+                };
+                
+                this.destination = {
+                    x: parseInt(document.getElementById('destX').value),
+                    y: parseInt(document.getElementById('destY').value)
+                };
+                
+                this.path = [this.currentPos];
+                this.stepCount = 0;
+                this.isTracking = true;
+                
+                document.getElementById('status').textContent = 'Tracking...';
+                document.getElementById('stepCounter').textContent = '0';
+                this.updateDistance();
+                
+                this.draw();
+                
+                if (typeof DeviceMotionEvent !== 'undefined') {
+                    if (typeof DeviceMotionEvent.requestPermission === 'function') {
+                        DeviceMotionEvent.requestPermission()
+                            .then(permission => {
+                                if (permission === 'granted') {
+                                    window.addEventListener('devicemotion', this.handleMotion.bind(this));
+                                }
+                            });
+                    } else {
+                        window.addEventListener('devicemotion', this.handleMotion.bind(this));
+                    }
+                } else {
+                    document.getElementById('status').textContent = 'Motion not supported';
+                }
+            }
+            
+            handleMotion(event) {
+                if (!this.isTracking || !event.acceleration) return;
+                
+                // Apply Kalman filter to smooth acceleration data
+                const filteredX = this.kfX.update(event.acceleration.x || 0);
+                const filteredY = this.kfY.update(event.acceleration.y || 0);
+                const filteredZ = this.kfZ.update(event.acceleration.z || 0);
+                
+                // Calculate acceleration magnitude
+                const currentAcceleration = Math.sqrt(
+                    Math.pow(filteredX - this.lastAcceleration.x, 2) +
+                    Math.pow(filteredY - this.lastAcceleration.y, 2) +
+                    Math.pow(filteredZ - this.lastAcceleration.z, 2)
+                );
+                
+                this.lastAcceleration = { x: filteredX, y: filteredY, z: filteredZ };
+                
+                // Detect step when acceleration exceeds threshold
+                if (currentAcceleration > this.accelerationThreshold) {
+                    this.moveUser();
+                }
+            }
+            
+            moveUser() {
+                if (this.currentPos.x === this.destination.x && 
+                    this.currentPos.y === this.destination.y) {
+                    return;
+                }
+                
+                // Calculate direction to destination
+                const dx = this.destination.x - this.currentPos.x;
+                const dy = this.destination.y - this.currentPos.y;
+                
+                // Move in the dominant direction
+                if (Math.abs(dx) > Math.abs(dy)) {
+                    this.currentPos.x += Math.sign(dx);
+                } else {
+                    this.currentPos.y += Math.sign(dy);
+                }
+                
+                // Add to path and update stats
+                this.path.push({...this.currentPos});
+                this.stepCount++;
+                document.getElementById('stepCounter').textContent = this.stepCount;
+                this.updateDistance();
+                
+                // Check if destination reached
+                if (this.currentPos.x === this.destination.x && 
+                    this.currentPos.y === this.destination.y) {
+                    document.getElementById('status').textContent = 'Destination reached!';
+                    this.canvas.classList.add('goal-reached');
+                }
+                
+                this.draw();
+            }
+            
+            updateDistance() {
+                const age = parseInt(document.getElementById('age').value) || 30;
+                let strideLength;
+                
+                if (age < 40) strideLength = 0.75;
+                else if (age < 60) strideLength = 0.65;
+                else strideLength = 0.55;
+                
+                const distance = (this.stepCount * strideLength).toFixed(2);
+                document.getElementById('distance').textContent = distance;
+            }
+            
+            drawGrid() {
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                // Draw grid lines
+                this.ctx.strokeStyle = '#eee';
+                this.ctx.lineWidth = 0.5;
+                
+                for (let i = 0; i <= this.gridSize; i++) {
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(i * this.cellSize, 0);
+                    this.ctx.lineTo(i * this.cellSize, this.canvas.height);
+                    this.ctx.stroke();
+                    
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(0, i * this.cellSize);
+                    this.ctx.lineTo(this.canvas.width, i * this.cellSize);
+                    this.ctx.stroke();
+                }
+            }
+            
+            drawTrail() {
+                if (this.trailStyle === 'none' || this.path.length < 2) return;
+                
+                switch (this.trailStyle) {
+                    case 'line':
+                        this.ctx.beginPath();
+                        this.ctx.strokeStyle = 'rgba(255, 0, 0, 0.7)';
+                        this.ctx.lineWidth = 2;
+                        this.path.forEach((pos, i) => {
+                            const x = pos.x * this.cellSize + this.cellSize/2;
+                            const y = pos.y * this.cellSize + this.cellSize/2;
+                            if (i === 0) {
+                                this.ctx.moveTo(x, y);
+                            } else {
+                                this.ctx.lineTo(x, y);
+                            }
+                        });
+                        this.ctx.stroke();
+                        break;
+                        
+                    case 'dots':
+                        this.path.forEach(pos => {
+                            this.ctx.beginPath();
+                            this.ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+                            this.ctx.arc(
+                                pos.x * this.cellSize + this.cellSize/2,
+                                pos.y * this.cellSize + this.cellSize/2,
+                                2, 0, Math.PI * 2
+                            );
+                            this.ctx.fill();
+                        });
+                        break;
+                        
+                    case 'fade':
+                        const maxAlpha = 0.8;
+                        const fadeSteps = Math.min(50, this.path.length);
+                        
+                        for (let i = Math.max(0, this.path.length - fadeSteps); i < this.path.length; i++) {
+                            const pos = this.path[i];
+                            const alpha = maxAlpha * (i - (this.path.length - fadeSteps)) / fadeSteps;
+                            
+                            this.ctx.beginPath();
+                            this.ctx.fillStyle = `rgba(255, 0, 0, ${alpha})`;
+                            this.ctx.arc(
+                                pos.x * this.cellSize + this.cellSize/2,
+                                pos.y * this.cellSize + this.cellSize/2,
+                                3, 0, Math.PI * 2
+                            );
+                            this.ctx.fill();
+                        }
+                        break;
+                }
+            }
+            
+            drawPositions() {
+                // Draw destination
+                this.ctx.fillStyle = '#00aa00';
+                this.ctx.fillRect(
+                    this.destination.x * this.cellSize,
+                    this.destination.y * this.cellSize,
+                    this.cellSize,
+                    this.cellSize
+                );
+                
+                // Draw current position
+                this.ctx.fillStyle = '#ff0000';
+                this.ctx.beginPath();
+                this.ctx.arc(
+                    this.currentPos.x * this.cellSize + this.cellSize/2,
+                    this.currentPos.y * this.cellSize + this.cellSize/2,
+                    this.cellSize/3, 0, Math.PI * 2
+                );
+                this.ctx.fill();
+                
+                // Draw direction indicator if not at destination
+                if (this.currentPos.x !== this.destination.x || 
+                    this.currentPos.y !== this.destination.y) {
+                    const angle = Math.atan2(
+                        this.destination.y - this.currentPos.y,
+                        this.destination.x - this.currentPos.x
+                    );
+                    
+                    this.ctx.save();
+                    this.ctx.translate(
+                        this.currentPos.x * this.cellSize + this.cellSize/2,
+                        this.currentPos.y * this.cellSize + this.cellSize/2
+                    );
+                    this.ctx.rotate(angle);
+                    this.ctx.fillStyle = '#ffff00';
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(0, -5);
+                    this.ctx.lineTo(15, 0);
+                    this.ctx.lineTo(0, 5);
+                    this.ctx.closePath();
+                    this.ctx.fill();
+                    this.ctx.restore();
+                }
+            }
+            
+            draw() {
+                this.drawGrid();
+                this.drawTrail();
+                this.drawPositions();
+            }
+            
+            reset() {
+                this.isTracking = false;
+                this.path = [];
+                this.stepCount = 0;
+                this.currentPos = { x: 0, y: 0 };
+                this.destination = { x: this.gridSize-1, y: this.gridSize-1 };
+                
+                // Reset Kalman filters
+                this.kfX.reset();
+                this.kfY.reset();
+                this.kfZ.reset();
+                this.lastAcceleration = { x: 0, y: 0, z: 0 };
+                
+                document.getElementById('status').textContent = 'Ready';
+                document.getElementById('stepCounter').textContent = '0';
+                document.getElementById('distance').textContent = '0';
+                this.canvas.classList.remove('goal-reached');
+                
+                this.draw();
+            }
+        }
+
+        // Initialize the application when the page loads
+        window.addEventListener('load', () => {
+            const tracker = new StepTracker();
+        });
+    </script>
+</body>
+</html>
